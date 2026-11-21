@@ -287,9 +287,9 @@ type engine struct {
 	focusFrom, leftSaw uint64
 	leftRead           bool
 	// openers are the elements that had the focus as overlays opened, by
-	// overlay; downs the elements the pointer went down on since the last
+	// overlay, each followed by those its overlay was opened from; downs the elements the pointer went down on since the last
 	// pass (0 for none), for PressedOutside.
-	openers   map[uint64]uint64
+	openers   map[uint64][]uint64
 	downs     []uint64
 	regs      []shortcutReg
 	nextRegs  []shortcutReg
@@ -1375,6 +1375,12 @@ func (rt *engine) prune() {
 	if len(rt.exits) > 0 {
 		rt.exitsEnded()
 	}
+	// The overlays the focus is in, found before those that closed go.
+	var buf [8]uint64
+	holding, free := buf[:0], false
+	if len(rt.openers) > 0 {
+		holding, free = rt.overlaysHolding(rt.focused, holding), rt.states[rt.focused] == nil
+	}
 	for id, s := range rt.states {
 		if rt.nbuilt == len(rt.states) {
 			// The pass built every state: none to forget.
@@ -1410,7 +1416,7 @@ func (rt *engine) prune() {
 			}
 		}
 	}
-	rt.restoreFocus()
+	rt.restoreFocus(holding, free)
 	// The focus does not stay in a page kept out of sight.
 	if s := rt.states[rt.focused]; s != nil && (s.seen != rt.frame || s.pass != rt.pass) {
 		rt.focused = 0

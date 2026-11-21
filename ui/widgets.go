@@ -655,6 +655,8 @@ func coreOverlay(c *context, fn func()) {
 	dir := o.dir
 	o.dir = saved.dir &^ dirSet
 	theme := c.theme
+	// The focus as the overlay opens, before what fn builds takes it.
+	focused := c.rt.focused
 	fn()
 	o.dir = dir
 	c.parent = saved
@@ -673,7 +675,7 @@ func coreOverlay(c *context, fn func()) {
 		return
 	}
 	for e := first; e != nil; e = e.next {
-		c.rt.openOverlay(e)
+		c.rt.openOverlay(e, focused)
 	}
 }
 

@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"image"
+	"image/draw"
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/internal/platform"
@@ -319,5 +322,187 @@ func TestEscapeGoesToTheFocusedElementFirst(t *testing.T) {
 	tt.Key(0, KeyEscape)
 	if !open || escapes != 1 {
 		t.Errorf("Escape in the terminal: dialog open %v, the terminal took %d", open, escapes)
+	}
+}
+
+// focusBackView is two buttons, and an overlay of kind, which ⌘K opens
+// and Escape closes.
+func focusBackView(kind string, open *bool) func(c *Context) {
+	var q string
+	return func(c *Context) {
+		if c.Shortcut(Cmd, KeyK) {
+			*open = true
+		}
+		var beta Element
+		Column(c).Padding(20).Gap(10).Children(func() {
+			Button(c.Key("a"), "Alpha")
+			beta = Button(c.Key("b"), "Beta")
+		})
+		switch kind {
+		case "alert":
+			AlertDialog(c, open, "Sure?", "Really?", "Cancel", "OK")
+		case "autofocus":
+			DialogBase(c, open, func(back, panel Element) {
+				TextInput(c.Key("q"), &q).Label("Query").AutoFocus()
+			})
+		case "popover":
+			PopoverBase(c, beta, open, func(panel Element) {
+				TextInput(c.Key("q"), &q).Label("Query").AutoFocus()
+			})
+		default:
+			DialogBase(c, open, func(back, panel Element) {
+				Button(c.Key("x"), "Inside")
+			})
+		}
+	}
+}
+
+// An overlay gives the focus back to the element that had it as it
+// opened, whatever its content did with the focus as it was built, as an
+// AlertDialog's default button and a field with AutoFocus take it.
+func TestOverlayGivesBackTheFocusItsContentTook(t *testing.T) {
+	for _, kind := range []string{"plain", "autofocus", "popover", "alert"} {
+		t.Run(kind, func(t *testing.T) {
+			open := false
+			tt := NewTester(focusBackView(kind, &open), 400, 300)
+			tt.Frame()
+			if err := tt.Click("Beta"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Key(Cmd, KeyK)
+			if !open {
+				t.Fatal("⌘K didn't open it")
+			}
+			tt.Key(0, KeyEscape)
+			if open {
+				t.Fatal("Escape didn't close it")
+			}
+			if !tt.Focused("Beta") {
+				t.Error("Beta didn't get the focus back")
+			}
+		})
+	}
+}
+
+// The focus given back as an overlay closes is drawn in the frames that
+// follow, with no event after the one that closed it: each key comes
+// alone, as a Mac sends a key pressed and let go of between two frames.
+func TestOverlayFocusGivenBackIsDrawn(t *testing.T) {
+	open := false
+	tt := NewTester(focusBackView("plain", &open), 400, 300)
+	tt.Frame()
+	tt.Key(0, KeyTab)
+	tt.Key(0, KeyTab)
+	if !tt.Focused("Beta") {
+		t.Fatal("Tab didn't reach Beta")
+	}
+	r, _ := tt.Find("Beta")
+	at := image.Rect(int(r.X)-24, int(r.Y)-12, int(r.X+r.W)+24, int(r.Y+r.H)+12)
+	crop := func() []byte {
+		out := image.NewRGBA(image.Rect(0, 0, at.Dx(), at.Dy()))
+		draw.Draw(out, out.Bounds(), tt.Image(), at.Min, draw.Src)
+		return out.Pix
+	}
+	want := crop()
+	tt.KeyRepeat(Cmd, KeyK)
+	if !open {
+		t.Fatal("⌘K didn't open it")
+	}
+	tt.KeyRepeat(0, KeyEscape)
+	if open || !tt.Focused("Beta") {
+		t.Fatalf("Escape: open %v, Beta focused %v", open, tt.Focused("Beta"))
+	}
+	if !slices.Equal(crop(), want) {
+		t.Error("Beta has the focus back but isn't drawn with it")
+	}
+}
+
+// An overlay opened as another closes, from an element inside it, gives
+// the focus back to where the one closing was opened from: a palette's
+// command closing it and asking with an alert, then Escape.
+func TestOverlayOpenedAsAnotherClosesGivesTheFocusBack(t *testing.T) {
+	palette, alert := false, false
+	var q string
+	tt := NewTester(func(c *Context) {
+		if c.Shortcut(Cmd, KeyK) {
+			palette = true
+		}
+		Column(c).Padding(20).Gap(10).Children(func() {
+			Button(c.Key("a"), "Alpha")
+			Button(c.Key("b"), "Beta")
+		})
+		DialogBase(c.Key("palette"), &palette, func(back, panel Element) {
+			TextInput(c.Key("q"), &q).Label("Query").AutoFocus()
+			if Button(c.Key("remove"), "Remove").Clicked() {
+				palette, alert = false, true
+			}
+		})
+		AlertDialog(c.Key("alert"), &alert, "Remove?", "Really?", "Cancel", "Remove")
+	}, 400, 300)
+	tt.Frame()
+	if err := tt.Click("Beta"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Key(Cmd, KeyK)
+	if !palette || !tt.Focused("Query") {
+		t.Fatalf("⌘K: palette %v, Query focused %v", palette, tt.Focused("Query"))
+	}
+	tt.Key(0, KeyTab)
+	if !tt.Focused("Remove") {
+		t.Fatal("Tab didn't reach Remove")
+	}
+	tt.Key(0, KeyEnter)
+	if palette || !alert {
+		t.Fatalf("Remove: palette %v, alert %v", palette, alert)
+	}
+	tt.Key(0, KeyEscape)
+	if alert {
+		t.Fatal("Escape didn't close the alert")
+	}
+	if !tt.Focused("Beta") {
+		t.Error("Beta didn't get the focus back")
+	}
+}
+
+// An overlay the focus is not in gives nothing back as it closes: the
+// focus that moved out of a popover, onto a field that goes in the same
+// frame as the popover, is not taken back to the popover's anchor.
+func TestOverlayTheFocusLeftGivesNothingBack(t *testing.T) {
+	open, showTemporary := false, true
+	var search, temp, alphaText string
+	var temporary Handle
+	tt := NewTester(func(c *Context) {
+		var alpha Element
+		Column(c).Children(func() {
+			alpha = TextInput(c.Key("alpha"), &alphaText).Label("Alpha")
+			if showTemporary {
+				TextInput(c.Key("temporary"), &temp).Label("Temporary").Bind(&temporary)
+			}
+		})
+		PopoverBase(c, alpha, &open, func(panel Element) {
+			TextInput(c.Key("search"), &search).Label("Search").AutoFocus()
+			if c.Shortcut(Cmd, KeyL) {
+				temporary.Focus(c)
+			}
+		})
+	}, 380, 300)
+	tt.Key(0, KeyTab)
+	if !tt.Focused("Alpha") {
+		t.Fatal("Tab didn't reach Alpha")
+	}
+	open = true
+	tt.Frame()
+	if !tt.Focused("Search") {
+		t.Fatal("the popover's field didn't take the focus")
+	}
+	tt.Key(Cmd, KeyL)
+	if !open || !tt.Focused("Temporary") {
+		t.Fatalf("⌘L: open %v, Temporary focused %v", open, tt.Focused("Temporary"))
+	}
+	open, showTemporary = false, false
+	tt.Frame()
+	tt.Type("x")
+	if tt.Focused("Alpha") || alphaText != "" {
+		t.Errorf("the popover closing took the focus to Alpha (%v), which got %q typed", tt.Focused("Alpha"), alphaText)
 	}
 }

@@ -128,31 +128,88 @@ func (rt *engine) overlayShortcut(e *node, mods Modifiers, key Key) bool {
 	return false
 }
 
-// openOverlay notes, as overlay id opens, the element that had the focus,
-// to give it back as the overlay closes (restoreFocus).
-func (rt *engine) openOverlay(back *node) {
+// openOverlay notes, as overlay back opens, focused, the element that had
+// the focus before it was built, to give it back as the overlay closes
+// (restoreFocus). Where focused is in another overlay, the elements that
+// one was opened from follow it, for when both are gone: an alert opened
+// from a palette's command, closing the palette, gives the focus back to
+// where the palette was opened from.
+func (rt *engine) openOverlay(back *node, focused uint64) {
 	if back.st.born != rt.frame {
 		return
 	}
 	if rt.openers == nil {
-		rt.openers = map[uint64]uint64{}
+		rt.openers = map[uint64][]uint64{}
 	}
-	if _, ok := rt.openers[back.id]; !ok {
-		rt.openers[back.id] = rt.focused
+	if _, ok := rt.openers[back.id]; ok {
+		return
 	}
+	ids := []uint64{focused}
+	var buf [8]uint64
+	if in := rt.overlaysHolding(focused, buf[:0]); len(in) > 0 {
+		ids = append(ids, rt.openers[in[0]]...)
+	}
+	rt.openers[back.id] = ids
 }
 
-// restoreFocus gives the focus back to the element that had it as an
-// overlay opened, once the overlay is gone with the focus that was in it.
-func (rt *engine) restoreFocus() {
-	for id, opener := range rt.openers {
+// overlaysHolding appends to in the open overlays element id is in,
+// innermost first: a popover is in the overlay its anchor is in.
+func (rt *engine) overlaysHolding(id uint64, in []uint64) []uint64 {
+	for s := rt.states[id]; s != nil; {
+		if _, ok := rt.openers[s.id]; ok {
+			in = append(in, s.id)
+		}
+		next := s.parent
+		if s.anchor != 0 {
+			next = s.anchor
+		}
+		s = rt.states[next]
+	}
+	return in
+}
+
+// restoreFocus gives the focus back, once it went with the overlays in,
+// those it was in as the frame ended (overlaysHolding), to the element
+// the innermost of them that closed was opened from, and asks for a frame
+// built anew that shows it focused. Where the focus was on no element
+// (free), as after a click on none that takes it, any overlay that closed
+// gives it back; where it was on an element outside every overlay, none.
+func (rt *engine) restoreFocus(in []uint64, free bool) {
+	give := func(id uint64) bool {
 		if rt.states[id] != nil {
+			return false
+		}
+		for _, o := range rt.openers[id] {
+			if rt.states[o] != nil {
+				rt.focused, rt.animating = o, true
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case rt.states[rt.focused] != nil:
+	case free:
+		for id := range rt.openers {
+			if give(id) {
+				break
+			}
+		}
+	default:
+		for _, id := range in {
+			if give(id) {
+				break
+			}
+		}
+	}
+	// The elements that went are forgotten, so that a new one taking an
+	// ID of theirs is not given the focus.
+	for id, openers := range rt.openers {
+		if rt.states[id] == nil {
+			delete(rt.openers, id)
 			continue
 		}
-		delete(rt.openers, id)
-		if rt.states[rt.focused] == nil && rt.states[opener] != nil {
-			rt.focused = opener
-		}
+		rt.openers[id] = slices.DeleteFunc(openers, func(o uint64) bool { return rt.states[o] == nil })
 	}
 }
 
