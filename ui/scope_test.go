@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"image"
+	"image/draw"
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/internal/platform"
@@ -319,5 +322,49 @@ func TestEscapeGoesToTheFocusedElementFirst(t *testing.T) {
 	tt.Key(0, KeyEscape)
 	if !open || escapes != 1 {
 		t.Errorf("Escape in the terminal: dialog open %v, the terminal took %d", open, escapes)
+	}
+}
+
+// The focus an overlay gives back as it closes is drawn in the frames that
+// follow, with no event after the one that closed it: each key comes
+// alone, as a Mac sends a key pressed and let go of between two frames.
+func TestOverlayFocusGivenBackIsDrawn(t *testing.T) {
+	open := false
+	tt := NewTester(func(c *Context) {
+		if c.Shortcut(Cmd, KeyK) {
+			open = true
+		}
+		Column(c).Padding(20).Gap(10).Children(func() {
+			Button(c.Key("a"), "Alpha")
+			Button(c.Key("b"), "Beta")
+		})
+		DialogBase(c, &open, func(back, panel Element) {
+			Button(c.Key("x"), "Inside")
+		})
+	}, 400, 300)
+	tt.Frame()
+	tt.Key(0, KeyTab)
+	tt.Key(0, KeyTab)
+	if !tt.Focused("Beta") {
+		t.Fatal("Tab didn't reach Beta")
+	}
+	r, _ := tt.Find("Beta")
+	at := image.Rect(int(r.X)-24, int(r.Y)-12, int(r.X+r.W)+24, int(r.Y+r.H)+12)
+	crop := func() []byte {
+		out := image.NewRGBA(image.Rect(0, 0, at.Dx(), at.Dy()))
+		draw.Draw(out, out.Bounds(), tt.Image(), at.Min, draw.Src)
+		return out.Pix
+	}
+	want := crop()
+	tt.KeyRepeat(Cmd, KeyK)
+	if !open {
+		t.Fatal("⌘K didn't open it")
+	}
+	tt.KeyRepeat(0, KeyEscape)
+	if open || !tt.Focused("Beta") {
+		t.Fatalf("Escape: open %v, Beta focused %v", open, tt.Focused("Beta"))
+	}
+	if !slices.Equal(crop(), want) {
+		t.Error("Beta has the focus back but isn't drawn with it")
 	}
 }

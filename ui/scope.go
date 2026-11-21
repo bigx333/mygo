@@ -143,7 +143,9 @@ func (rt *engine) openOverlay(back *node) {
 }
 
 // restoreFocus gives the focus back to the element that had it as an
-// overlay opened, once the overlay is gone with the focus that was in it.
+// overlay opened, once the overlay is gone with the focus that was in it,
+// and asks for a frame built anew that shows it focused: it runs after
+// the frame was presented.
 func (rt *engine) restoreFocus() {
 	for id, opener := range rt.openers {
 		if rt.states[id] != nil {
@@ -151,7 +153,7 @@ func (rt *engine) restoreFocus() {
 		}
 		delete(rt.openers, id)
 		if rt.states[rt.focused] == nil && rt.states[opener] != nil {
-			rt.focused = opener
+			rt.focused, rt.animating = opener, true
 		}
 	}
 }
