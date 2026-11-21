@@ -709,7 +709,7 @@ func DiffView(c *ui.Context, d *DiffState) ui.Element {
 			}
 			sides[i] = d.eds[i].build(c, b, o).Basis(0).FillHeight()
 			if i == 0 {
-				div = ui.Box(c).Key("diff divider").Width(1).Shrink(0).FillHeight()
+				div = ui.Box(c).Key("diff divider").Shrink(0).FillHeight()
 			}
 			if d.eds[i].focused {
 				d.oldActive = i == 0
@@ -797,8 +797,8 @@ func (d *DiffState) sideMin(t *ui.Theme) float32 {
 }
 
 // buildDivider builds the line between the sides of a split view, div,
-// as ui.Split's divider: the pointer drags it, from a handle a few DIPs
-// wide over either side, and it takes the focus between the sides, in
+// as ui.Split's divider: the pointer drags it, a few DIPs wide over
+// either side, and it takes the focus between the sides, in
 // their order, and moves with the arrows. It shares the view's width
 // between the sides by SplitPercent (split.grow), and reports whether a
 // drag or a key moved it.
@@ -826,7 +826,7 @@ func (d *DiffState) buildDivider(c *ui.Context, ct *Theme, div ui.Element) bool 
 			d.SplitPercent, shown, moved = v*100/room, v, true
 		}
 	}
-	div.Focusable().FocusRing(false).Role(ui.RoleSplitter).Label(l10n.In(c.Locale()).Divider())
+	div.Focusable().Width(grip).MarginX(-(grip - 1) / 2).Role(ui.RoleSplitter).Label(l10n.In(c.Locale()).Divider())
 	// The arrows move the line the way they point: the view is laid out
 	// left to right in either direction, as code reads.
 	if div.Shortcut(0, ui.KeyLeft) {
@@ -835,38 +835,28 @@ func (d *DiffState) buildDivider(c *ui.Context, ct *Theme, div ui.Element) bool 
 	if div.Shortcut(0, ui.KeyRight) {
 		set(shown + step)
 	}
-	// The handle the pointer drags spans a few DIPs over either side,
-	// above them. The wheel over it scrolls the diff, as over the lines.
-	// The line and its handle are above the separators, which span both
-	// sides, built after them: it crosses them, as a header's text keeps
-	// short of it, and is dragged from over them too.
-	div.ZIndex(1)
-	handle := ui.Box(c).Key("diff divider handle").Absolute().Top(0).Bottom(0).Width(grip).ZIndex(1).
-		Cursor(ui.CursorResizeEW).HandleInput(d.eds[1].wheelOnly)
-	// A press there focuses the line, as a press on it would; only a move
-	// moves it.
-	dx, _, held := handle.Dragged()
-	if held {
-		div.Focus()
-		if dx != 0 {
-			set(shown + dx)
-		}
+	// The divider spans a few DIPs over either side, above them, which
+	// the pointer drags and its focus ring goes around; it draws the line
+	// in its middle and takes no room from the sides. The wheel over it
+	// scrolls the diff, as over the lines. It is above the separators,
+	// which span both sides, built after them: the line crosses them, as
+	// a header's text keeps short of it, and is dragged from over them too.
+	div.ZIndex(1).Cursor(ui.CursorResizeEW).HandleInput(d.eds[1].wheelOnly)
+	dx, _, held := div.Dragged()
+	if held && dx != 0 {
+		set(shown + dx)
 	}
-	handle.Left(shown - (grip-1)/2)
 	lo, hi := minSide, max(room-minSide, minSide)
 	if !fits {
 		lo, hi = shown, shown
 	}
 	div.Range(float64(lo), float64(hi), float64(shown)).Step(float64(step))
 	line := ct.Background.Mix(t.Border, 0.6)
-	if held || handle.Hovered() {
+	if held || div.Hovered() {
 		line = t.Accent
 	}
-	div.Background(line)
-	handle.Draw(func(p *ui.Painter, r ui.Rect) {
-		if div.FocusVisible() {
-			p.FocusRing(r, [4]float32{})
-		}
+	div.Draw(func(p *ui.Painter, r ui.Rect) {
+		p.Fill(ui.Rect{X: r.X + (r.W-1)/2, Y: r.Y, W: 1, H: r.H}, line, 0)
 	})
 	// The layout shares this frame's width as the last frame's: the old
 	// side's width, as shown, and the rest; halves, as two items growing

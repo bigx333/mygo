@@ -1,12 +1,15 @@
 package editor
 
 import (
+	"image"
+	"image/draw"
 	"math"
 	"math/rand/v2"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/diff"
 	"github.com/egoist/mygo/internal/wait"
@@ -1653,5 +1656,79 @@ func TestDiffScrollPastEndAndFocus(t *testing.T) {
 				t.Errorf("layout %v: Focus left the new side without the keyboard", layout)
 			}
 		}
+	}
+}
+
+// A split view whose parent leaves with an Exit paints as it did while it
+// goes, its divider focused or not: the copy's drawings hold nothing of
+// the build that made them. Live, the divider's ring follows the focus
+// as the frame ends, as when a control built after it takes the focus.
+func TestDiffSplitLeavesWithAnExit(t *testing.T) {
+	for _, focused := range []bool{false, true} {
+		old := strings.Repeat("one\ntwo\nthree\n", 20)
+		d := &DiffState{Old: NewBuffer(old), New: NewBuffer(strings.Replace(old, "two", "TWO", 3)), Layout: DiffSplit}
+		shown, takeFocus := true, false
+		tt := ui.NewTester(func(c *ui.Context) {
+			if c.Shortcut(ui.Cmd, ui.KeyW) {
+				shown = false
+			}
+			ui.Column(c).Fill().Children(func() {
+				if ui.Button(c, "Close").Clicked() {
+					shown = false
+				}
+				if shown {
+					ui.Column(c).Key("panel").Grow(1).Transition(ui.ElementTransition{Duration: 200 * time.Millisecond, Exit: &ui.Motion{X: 16}}).Children(func() {
+						DiffView(c.Key("diff"), d).Grow(1).FillWidth()
+					})
+				}
+				if b := ui.Button(c, "After"); takeFocus {
+					b.Focus()
+					takeFocus = false
+				}
+			})
+		}, 1200, 800)
+		tt.Frame()
+		tt.Advance(time.Second)
+		div, ok := tt.AccessByRole(ui.RoleSplitter, "")
+		if !ok {
+			t.Fatal("the diff has no divider")
+		}
+		at := image.Rect(int(div.Bounds.X)-8, int(div.Bounds.Y), int(div.Bounds.X+div.Bounds.W)+8, int(div.Bounds.Y)+200)
+		crop := func() []byte {
+			out := image.NewRGBA(image.Rect(0, 0, at.Dx(), at.Dy()))
+			draw.Draw(out, out.Bounds(), tt.Image(), at.Min, draw.Src)
+			return out.Pix
+		}
+		unfocused := crop()
+		toDivider := func() {
+			for range 20 {
+				if div, _ := tt.AccessByRole(ui.RoleSplitter, ""); div.Focused {
+					break
+				}
+				tt.Key(0, ui.KeyTab)
+			}
+			if div, _ := tt.AccessByRole(ui.RoleSplitter, ""); !div.Focused {
+				t.Fatal("Tab didn't reach the divider")
+			}
+			if slices.Equal(crop(), unfocused) {
+				t.Fatal("the divider has the focus from the keyboard but no ring")
+			}
+		}
+		toDivider()
+		takeFocus = true
+		tt.Frame()
+		if !tt.Focused("After") || !slices.Equal(crop(), unfocused) {
+			t.Fatalf("After took the focus (%v) but the divider still shows a ring", tt.Focused("After"))
+		}
+		if focused {
+			toDivider()
+			tt.Key(ui.Cmd, ui.KeyW)
+		} else if err := tt.Click("Close"); err != nil {
+			t.Fatal(err)
+		}
+		if shown {
+			t.Fatal("the panel didn't close")
+		}
+		tt.Advance(time.Second)
 	}
 }
